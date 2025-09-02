@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>NOAA Vounteer Observing Ship Program Data — Leaflet (client-only)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+
+    /* Title banner + corner logo (optional) */
+    .banner {
+      position: absolute; top: 0; left: 0; width: 100%;
+      background: rgba(0,60,136,0.9); color: #fff;
+      text-align: center; padding: 8px 0; font: bold 18px/1.4 system-ui, sans-serif;
+      z-index: 1000;
+    }
+    .leaflet-top { top: 50px; }
+    .logo.tr { position: absolute; top: 60px; right: 10px; width: 80px; z-index: 1000; }
+    .logo.tr img { width: 100%; height: auto; display: block; }
+
+    .status {
+      position: absolute; z-index: 999; top: 60px; left: 100px;
+      background: #fff; padding: 6px 8px; border-radius: 6px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.15);
+      font: 12px/1.2 system-ui, sans-serif;
+    }
+    .legend {
+      position: absolute; z-index: 999; bottom: 10px; left: 100px;
+      background:#fff; padding:8px 10px; border-radius:6px;
+      box-shadow:0 1px 4px rgba(0,0,0,.15);
+      font:12px/1.2 system-ui,sans-serif;
+    }
+    .legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#3388ff; margin-right:6px; }
+
+    .popup-table { border-collapse: collapse; font: 12px/1.35 system-ui, sans-serif; }
+    .popup-table td { padding: 2px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+    .popup-table td.key { color: #444; font-weight: 600; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="banner">NOAA Vounteer Observing Ship Program Data Map</div>
+  <div class="logo tr">
+    <img src="GSP_Logo_Large.png" alt="GeospatialPython.com">
+  </div>
+
+  <div id="map"></div>
+  <div class="status" id="status">Loading shipboard observations…</div>
+  <div class="legend"><div><span class="dot"></span>Latest shipboard reports (NDBC)</div></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/esri-leaflet@3.0.12/dist/esri-leaflet.js"></script>
+
+  <script>
+    // Map
+    const map = L.map('map', { worldCopyJump: true }).setView([20, -30], 3);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Esri Living Atlas Feature Service (ships)
+    const SERVICE_URL = 'https://services.arcgis.com/P3ePLMYs2RVChkJx/ArcGIS/rest/services/Latest_Shipboard_Observations/FeatureServer/0';
+
+    // Human-readable labels for the fields you showed (uppercase keys)
+    const fieldLabels = {
+      SHIP_ID: "Ship ID",
+      SHIP: "Ship",
+      YY: "Year",
+      MO: "Month",
+      DD: "Day",
+      hh: "Hour (UTC)",
+      LAT: "Latitude",
+      LON: "Longitude",
+      WDIR: "Wind Direction (°)",
+      WSPD: "Wind Speed",
+      GST: "Wind Gust",
+      WVHT: "Significant Wave Height",
+      DPD: "Dominant Wave Period",
+      APD: "Average Wave Period",
+      MWD: "Mean Wave Direction (°)",
+      PRES: "Pressure",
+      ATMP: "Air Temperature",
+      WTMP: "Sea Surface Temperature",
+      DEWP: "Dewpoint",
+      VIS: "Visibility",
+      PTDY: "Pressure Tendency (3h)",
+      TCC: "Total Cloud Cover",
+      S1HT: "Swell 1 Height",
+      S1PD: "Swell 1 Period",
+      S1DIR: "Swell 1 Direction (°)",
+      S2HT: "Swell 2 Height",
+      S2PD: "Swell 2 Period",
+      S2DIR: "Swell 2 Direction (°)",
+      II: "Ship Indicator II",
+      IE: "Ship Indicator IE",
+      IR: "Ship Indicator IR",
+      // Derived field below:
+      _OBS_TIME_UTC: "Observation Time (UTC)"
+    };
+
+    // Preferred display order
+    const preferredOrder = [
+      "_OBS_TIME_UTC",
+      "SHIP", "SHIP_ID",
+      "LAT", "LON",
+      "WDIR", "WSPD", "GST",
+      "PRES", "PTDY",
+      "ATMP", "WTMP", "DEWP",
+      "VIS", "TCC",
+      "WVHT", "DPD", "APD", "MWD",
+      "S1HT", "S1PD", "S1DIR",
+      "S2HT", "S2PD", "S2DIR",
+      "YY", "MO", "DD", "hh",
+      "II", "IE", "IR"
+    ];
+
+    // Build a UTC Date from YY/MO/DD/hh if present
+    function deriveObsTimeUTC(props) {
+      const YY = num(props.YY), MO = num(props.MO), DD = num(props.DD), hh = num(props.hh);
+      if (isFinite(YY) && isFinite(MO) && isFinite(DD) && isFinite(hh)) {
+        const fullYear = YY < 100 ? (YY >= 70 ? 1900 + YY : 2000 + YY) : YY; // 2-digit year safety
+        const d = new Date(Date.UTC(fullYear, MO - 1, DD, hh, 0, 0));
+        if (!isNaN(d)) return d;
+      }
+      return null;
+    }
+
+    function num(v) {
+      const n = typeof v === 'string' ? parseFloat(v) : v;
+      return isFinite(n) ? n : NaN;
+    }
+
+    function formatTimeUTC(d) {
+      try {
+        return d.toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          timeZone: 'UTC', timeZoneName: 'short'
+        });
+      } catch { return d.toISOString(); }
+    }
+
+    function looksEmpty(v) {
+      return v === null || v === undefined || (typeof v === 'string' && v.trim() === '');
+    }
+
+    // Field-specific value formatting
+    function formatValue(key, value) {
+      if (looksEmpty(value)) return '';
+      // Coordinate rounding
+      if ((key === 'LAT' || key === 'LON') && typeof value === 'number') {
+        return value.toFixed(2);
+      }
+      // Degrees should be whole-ish
+      if ((/DIR$/i.test(key) || key === 'WDIR' || key === 'MWD') && isFinite(+value)) {
+        return Math.round(+value);
+      }
+      // Periods to 1 decimal
+      if ((/PD$/i.test(key) || key === 'DPD' || key === 'APD' || key === 'S1PD' || key === 'S2PD') && isFinite(+value)) {
+        return (+value).toFixed(1);
+      }
+      // Speeds/temps/pressure to 1 decimal if numeric
+      if ((key === 'WSPD' || key === 'GST' || key === 'ATMP' || key === 'WTMP' || key === 'DEWP' || key === 'PRES' || key === 'WVHT' || key === 'S1HT' || key === 'S2HT') && isFinite(+value)) {
+        return (+value).toFixed(1);
+      }
+      return value;
+    }
+
+    function buildPopup(props = {}) {
+      // Normalize keys to the exact case the layer uses; we’ll treat everything as-is but consult our uppercase label map.
+      const p = { ...props };
+
+      // Derive Observation Time (UTC) if components exist
+      const d = deriveObsTimeUTC(p);
+      if (d) p._OBS_TIME_UTC = formatTimeUTC(d);
+
+      // Remove keys with empty values
+      const entries = Object.entries(p).filter(([k, v]) => !looksEmpty(v));
+
+      // Keep only fields we know or that have values; hide geometry/system fields
+      const hide = new Set(['OBJECTID','objectid','Shape','shape','GlobalID','globalid']);
+      const visible = entries
+        .filter(([k]) => !hide.has(k))
+        // de-duplicate if any
+        .reduce((acc, [k, v]) => { acc[k] = v; return acc; }, {});
+
+      // Determine display order
+      const orderedKeys = [];
+      preferredOrder.forEach(k => { if (k in visible) orderedKeys.push(k); });
+      // append any remaining fields not in preferred order
+      Object.keys(visible).forEach(k => { if (!orderedKeys.includes(k)) orderedKeys.push(k); });
+
+      // Build rows
+      const rows = orderedKeys.map(k => {
+        const label = fieldLabels[k] || k;
+        const v = formatValue(k, visible[k]);
+        return `<tr><td class="key">${label}</td><td>${v}</td></tr>`;
+      }).join('');
+
+      return `<table class="popup-table">${rows}</table>`;
+    }
+
+    // Marker symbol
+    function pointToLayer(feature, latlng) {
+      return L.circleMarker(latlng, {
+        radius: 5, weight: 1, color: '#1f78b4', fillColor: '#3388ff', fillOpacity: 0.6
+      });
+    }
+
+    const statusEl = document.getElementById('status');
+    const shipLayer = L.esri.featureLayer({ url: SERVICE_URL, pointToLayer })
+      .on('loading', () => statusEl.textContent = 'Loading shipboard observations…')
+      .on('load',    () => statusEl.textContent = 'Shipboard observations loaded')
+      .on('requesterror', () => statusEl.textContent = 'Error loading data')
+      .addTo(map);
+
+    shipLayer.bindPopup(function (layer) {
+      const props = layer.feature?.properties || {};
+      // Title line for popup
+      const name = props.SHIP || props.SHIP_ID || props.callsign || props.station || 'Ship observation';
+      return '<strong>' + name + '</strong><br/>' + buildPopup(props);
+    }, { maxWidth: 460 });
+
+    shipLayer.once('load', () => {
+      try {
+        const b = shipLayer.getBounds();
+        if (b && b.isValid()) map.fitBounds(b, { padding: [20,20] });
+      } catch {}
+    });
+
+    // Manual refresh: press "r"
+    window.addEventListener('keydown', (e) => {
+      if (e.key.toLowerCase() === 'r') {
+        statusEl.textContent = 'Refreshing…';
+        shipLayer.refresh();
+      }
+    });
+  </script>
+</body>
+</html>
